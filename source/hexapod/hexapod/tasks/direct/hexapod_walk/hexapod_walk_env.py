@@ -14,7 +14,7 @@ from isaaclab_tasks.direct.locomotion.locomotion_env import LocomotionEnv
 @configclass
 class HexapodWalkEnvCfg(DirectRLEnvCfg):
     # env
-    episode_length_s = 10.0
+    episode_length_s = 5.0
     decimation = 2
     # - spaces definition
     action_scale = 0.5
@@ -56,7 +56,7 @@ class HexapodWalkEnvCfg(DirectRLEnvCfg):
     dof_vel_scale: float = 0.1
 
     death_cost: float = -1.0
-    termination_height: float = -0.4
+    termination_height: float = -0.3
 
     angular_velocity_scale: float = 0.25
     contact_force_scale: float = 0.1

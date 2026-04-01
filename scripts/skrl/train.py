@@ -57,6 +57,15 @@ parser.add_argument(
 parser.add_argument(
     "--ray-proc-id", "-rid", type=int, default=None, help="Automatically configured by Ray integration, otherwise None."
 )
+parser.add_argument(
+    "--no-sim-render",
+    action="store_true",
+    default=False,
+    help=(
+        "Raise SimulationCfg.render_interval to reduce in-sim render work (use with AppLauncher --headless for "
+        "fastest training). Ignored when --video is set."
+    ),
+)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -162,6 +171,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg["seed"] = args_cli.seed if args_cli.seed is not None else agent_cfg["seed"]
     env_cfg.seed = agent_cfg["seed"]
 
+    if args_cli.no_sim_render and not args_cli.video:
+        sim = getattr(env_cfg, "sim", None)
+        if sim is not None:
+            sim.render_interval = 1_000_000
+            logger.info("Training: sim.render_interval=%s (--no-sim-render)", sim.render_interval)
+    elif args_cli.no_sim_render and args_cli.video:
+        logger.warning("--no-sim-render ignored: --video requires rendering.")
+
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "skrl", agent_cfg["agent"]["experiment"]["directory"])
     log_root_path = os.path.abspath(log_root_path)
@@ -178,6 +195,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg["agent"]["experiment"]["experiment_name"] = log_dir
     # update log_dir
     log_dir = os.path.join(log_root_path, log_dir)
+
+    write_interval = agent_cfg.get("agent", {}).get("experiment", {}).get("write_interval", "auto")
+    if write_interval != 0:
+        print("[INFO] TensorBoard (policy / value / discriminator losses, rewards, etc.):")
+        print(f"       tensorboard --logdir {log_root_path}")
+        print("[INFO] Faster training: pass --headless (no GUI) and optionally --no-sim-render; omit --video.")
 
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
