@@ -62,7 +62,7 @@ reply_buffer:
 agent:
   class: AMP
   # Larger → richer on-policy segment per update; costs more GPU RAM (scales with num_envs).
-  rollouts: 64
+  rollouts: 256
   learning_epochs: 10
   mini_batches: 4
   discount_factor: 0.99

@@ -29,7 +29,8 @@ class HexapodAmpMimicEnvCfg(DirectRLEnvCfg):
     episode_length_s = 10.0
     decimation = 2
 
-    observation_space = 49
+    # 49 kinematic + 2 command (x,y) + 1 synthetic progress — must match compute_hexapod_amp_obs.
+    observation_space = 52
     action_space = 18
     state_space = 0
 
@@ -38,7 +39,22 @@ class HexapodAmpMimicEnvCfg(DirectRLEnvCfg):
     """Radians per unit action added to default joint positions (then clamped to soft limits)."""
 
     num_amp_observations = 2
-    amp_observation_space = 49
+    amp_observation_space = 52
+
+    amp_command_mode: str = "demo"
+    """``demo``: interpolate ``command`` from HDF5 along motion time; ``random``: U(low, high) per step."""
+
+    amp_random_command_xy_low: float = -1.0
+    amp_random_command_xy_high: float = 1.0
+
+    playback_mode: bool = False
+    """If True (e.g. skrl ``play`` for mimic): fixed command; progress cycles 0→1.0 (+0.01) then 0.01…"""
+
+    playback_fixed_command_xy: tuple[float, float] = (1.0, 0.0)
+    """Used when ``playback_mode``; constant (x, y) in every policy observation."""
+
+    playback_episode_length_steps: int = 6000
+    """When ``playback_mode``, episode length in control steps (``max_episode_length``)."""
 
     motion_file: str = _DEFAULT_MOTION_FILE
     """Path to HDF5 with ``obs/joint_pos``, ``joint_vel``, ``pose`` (T,6), ``twist`` (T,6)."""

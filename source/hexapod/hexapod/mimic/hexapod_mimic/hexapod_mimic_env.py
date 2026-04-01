@@ -18,6 +18,19 @@ from .hexapod_hdf5_motion_loader import HexapodHdf5MotionLoader
 from .hexapod_mimic_env_cfg import HexapodAmpMimicEnvCfg
 
 
+def _synthetic_progress_u(fi: torch.Tensor) -> torch.Tensor:
+    """Scalar progress in ``[0, 1]``: step 0 → 0; then 0.01 … 1.0 cycling (after 1.0 next is 0.01).
+
+    For integer index ``s``: 0 → 0; ``s>=1`` → ``(((s-1) mod 100) + 1) * 0.01``.
+    """
+    out = torch.zeros(fi.shape[0], 1, device=fi.device, dtype=torch.float32)
+    m = fi > 0
+    if m.any().item():
+        fv = fi[m].long()
+        out[m] = (((fv - 1) % 100) + 1).unsqueeze(-1).float() * 0.01
+    return out
+
+
 def _roll_pitch_rad_from_quat_wxyz(quat: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Roll and pitch (rad) from body quaternion ``(w, x, y, z)`` per row."""
     w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
@@ -37,6 +50,10 @@ class HexapodAmpMimicEnv(DirectRLEnv):
                 "HexapodAmpMimicEnv: key_body_names must be empty — the HDF5 loader only stores a single root "
                 "track; extend HexapodHdf5MotionLoader before enabling key bodies."
             )
+
+        if cfg.playback_mode:
+            step_dt = float(cfg.sim.dt) * int(cfg.decimation)
+            cfg.episode_length_s = float(cfg.playback_episode_length_steps) * step_dt
 
         super().__init__(cfg, render_mode, **kwargs)
 
@@ -62,6 +79,8 @@ class HexapodAmpMimicEnv(DirectRLEnv):
         self.amp_observation_buffer = torch.zeros(
             (self.num_envs, self.cfg.num_amp_observations, self.cfg.amp_observation_space), device=self.device
         )
+        self._amp_prog_step = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._demo_cmd_time = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot)
@@ -90,6 +109,22 @@ class HexapodAmpMimicEnv(DirectRLEnv):
         return self.robot.data.body_pos_w[:, self.key_body_indexes]
 
     def _get_observations(self) -> dict:
+        if self.cfg.playback_mode:
+            cx, cy = self.cfg.playback_fixed_command_xy
+            cmd = torch.tensor(
+                [cx, cy], device=self.device, dtype=torch.float32
+            ).unsqueeze(0).expand(self.num_envs, -1)
+            prog_u = _synthetic_progress_u(self._amp_prog_step)
+        else:
+            prog_u = _synthetic_progress_u(self._amp_prog_step)
+            if self.cfg.amp_command_mode.lower() == "random":
+                lo = self.cfg.amp_random_command_xy_low
+                hi = self.cfg.amp_random_command_xy_high
+                cmd = torch.rand(self.num_envs, 2, device=self.device, dtype=torch.float32) * (hi - lo) + lo
+            else:
+                t_np = self._demo_cmd_time.detach().cpu().numpy()
+                *_, cmd, _ = self._motion_loader.sample(num_samples=self.num_envs, times=t_np)
+
         obs = compute_hexapod_amp_obs(
             self.robot.data.joint_pos,
             self.robot.data.joint_vel,
@@ -98,11 +133,20 @@ class HexapodAmpMimicEnv(DirectRLEnv):
             self.robot.data.body_lin_vel_w[:, self.ref_body_index],
             self.robot.data.body_ang_vel_w[:, self.ref_body_index],
             self._key_body_positions_world(),
+            cmd,
+            prog_u,
         )
         for i in reversed(range(self.cfg.num_amp_observations - 1)):
             self.amp_observation_buffer[:, i + 1] = self.amp_observation_buffer[:, i]
         self.amp_observation_buffer[:, 0] = obs.clone()
         self.extras = {"amp_obs": self.amp_observation_buffer.view(-1, self.amp_observation_size)}
+        self._amp_prog_step += 1
+        if not self.cfg.playback_mode:
+            dur = float(self._motion_loader.duration)
+            if dur > 0.0:
+                self._demo_cmd_time = torch.remainder(self._demo_cmd_time + self.step_dt, dur)
+            else:
+                self._demo_cmd_time.zero_()
         return {"policy": obs}
 
     def _get_rewards(self) -> torch.Tensor:
@@ -142,12 +186,15 @@ class HexapodAmpMimicEnv(DirectRLEnv):
         self.robot.write_root_com_velocity_to_sim(root_state[:, 7:], env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
+        self._amp_prog_step[env_ids] = 0
+
     def _reset_strategy_default(self, env_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         root_state = self.robot.data.default_root_state[env_ids].clone()
         # Root at env origin (0, 0, 0 in env frame → world = env_origins).
         root_state[:, 0:3] = self.scene.env_origins[env_ids]
         joint_pos = self.robot.data.default_joint_pos[env_ids].clone()
         joint_vel = self.robot.data.default_joint_vel[env_ids].clone()
+        self._demo_cmd_time[env_ids] = 0.0
         return root_state, joint_pos, joint_vel
 
     def _reset_strategy_random(self, env_ids: torch.Tensor, start: bool = False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -160,6 +207,8 @@ class HexapodAmpMimicEnv(DirectRLEnv):
             body_rotations,
             body_linear_velocities,
             body_angular_velocities,
+            _cmd_reset,
+            _fi0,
         ) = self._motion_loader.sample(num_samples=num_samples, times=times)
 
         root_state = self.robot.data.default_root_state[env_ids].clone()
@@ -174,6 +223,8 @@ class HexapodAmpMimicEnv(DirectRLEnv):
 
         amp_observations = self.collect_reference_motions(num_samples, times)
         self.amp_observation_buffer[env_ids] = amp_observations.view(num_samples, self.cfg.num_amp_observations, -1)
+
+        self._demo_cmd_time[env_ids] = torch.tensor(times, device=self.device, dtype=torch.float32)
 
         return root_state, dof_pos, dof_vel
 
@@ -191,6 +242,8 @@ class HexapodAmpMimicEnv(DirectRLEnv):
             body_rotations,
             body_linear_velocities,
             body_angular_velocities,
+            cmd_rows,
+            frame_index_0,
         ) = self._motion_loader.sample(num_samples=num_samples, times=times)
 
         if self.motion_key_body_indexes:
@@ -198,6 +251,7 @@ class HexapodAmpMimicEnv(DirectRLEnv):
         else:
             key_pos = body_positions.new_zeros((body_positions.shape[0], 0, 3))
 
+        prog_ref = _synthetic_progress_u(frame_index_0)
         amp_observation = compute_hexapod_amp_obs(
             dof_positions[:, self.motion_dof_indexes],
             dof_velocities[:, self.motion_dof_indexes],
@@ -206,6 +260,8 @@ class HexapodAmpMimicEnv(DirectRLEnv):
             body_linear_velocities[:, self.motion_ref_body_index],
             body_angular_velocities[:, self.motion_ref_body_index],
             key_pos,
+            cmd_rows,
+            prog_ref,
         )
         return amp_observation.view(-1, self.amp_observation_size)
 
@@ -230,6 +286,8 @@ def compute_hexapod_amp_obs(
     root_linear_velocities: torch.Tensor,
     root_angular_velocities: torch.Tensor,
     key_body_positions: torch.Tensor,
+    command_xy: torch.Tensor,
+    progress_u: torch.Tensor,
 ) -> torch.Tensor:
     n_env = dof_positions.shape[0]
     if key_body_positions.shape[1] == 0:
@@ -245,6 +303,8 @@ def compute_hexapod_amp_obs(
             root_linear_velocities,
             root_angular_velocities,
             key_flat,
+            command_xy,
+            progress_u,
         ),
         dim=-1,
     )

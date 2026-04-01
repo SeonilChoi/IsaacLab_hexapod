@@ -30,6 +30,7 @@ class HexapodHdf5MotionLoader:
         data/demo_*/obs/joint_vel   (T, D)
         data/demo_*/obs/pose        (T, 6)   # position xyz + roll-pitch-yaw
         data/demo_*/obs/twist       (T, 6)   # linear vel xyz + angular vel xyz
+        data/demo_*/obs/command     (T, 2)   # optional; zeros if missing
     """
 
     def __init__(self, motion_file: str, device: torch.device, *, fps: float = 120.0) -> None:
@@ -43,6 +44,7 @@ class HexapodHdf5MotionLoader:
         joint_vel_chunks: list[np.ndarray] = []
         pose_chunks: list[np.ndarray] = []
         twist_chunks: list[np.ndarray] = []
+        command_chunks: list[np.ndarray] = []
 
         with h5py.File(motion_file, "r") as f:
             raw_attr = f.attrs.get("num_demos")
@@ -72,6 +74,13 @@ class HexapodHdf5MotionLoader:
                 joint_vel_chunks.append(jv)
                 pose_chunks.append(pose)
                 twist_chunks.append(twist)
+                if "command" in obs:
+                    cmd = np.asarray(obs["command"][...], dtype=np.float32)
+                    if cmd.shape != (jp.shape[0], 2):
+                        raise ValueError(f"{name}/obs/command: expected shape (T, 2), got {cmd.shape}")
+                    command_chunks.append(cmd)
+                else:
+                    command_chunks.append(np.zeros((jp.shape[0], 2), dtype=np.float32))
 
         self.dof_positions = torch.tensor(np.concatenate(joint_pos_chunks, axis=0), device=device)
         self.dof_velocities = torch.tensor(np.concatenate(joint_vel_chunks, axis=0), device=device)
@@ -84,6 +93,7 @@ class HexapodHdf5MotionLoader:
         self.body_rotations = q.unsqueeze(1)
         self.body_linear_velocities = torch.tensor(twists[:, :3], device=device).unsqueeze(1)
         self.body_angular_velocities = torch.tensor(twists[:, 3:6], device=device).unsqueeze(1)
+        self.commands = torch.tensor(np.concatenate(command_chunks, axis=0), device=device)
 
         self.num_frames = self.dof_positions.shape[0]
         self.num_dofs = self.dof_positions.shape[1]
@@ -179,10 +189,20 @@ class HexapodHdf5MotionLoader:
 
     def sample(
         self, num_samples: int, times: np.ndarray | None = None, duration: float | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
         times = self.sample_times(num_samples, duration) if times is None else times
         index_0, index_1, blend = self._compute_frame_blend(times)
         blend_t = torch.tensor(blend, dtype=torch.float32, device=self.device)
+        frame_index_0 = torch.tensor(index_0, dtype=torch.long, device=self.device)
 
         return (
             self._interpolate(self.dof_positions, blend=blend_t, start=index_0, end=index_1),
@@ -191,6 +211,8 @@ class HexapodHdf5MotionLoader:
             self._slerp(self.body_rotations, blend=blend_t, start=index_0, end=index_1),
             self._interpolate(self.body_linear_velocities, blend=blend_t, start=index_0, end=index_1),
             self._interpolate(self.body_angular_velocities, blend=blend_t, start=index_0, end=index_1),
+            self._interpolate(self.commands, blend=blend_t, start=index_0, end=index_1),
+            frame_index_0,
         )
 
     def get_dof_index(self, dof_names: list[str]) -> list[int]:

@@ -135,6 +135,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, expe
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
+    # Hexapod AMP mimic: fixed command [1,0], cycling progress (+0.01), 6000-step eval episode (see env cfg).
+    if args_cli.task == "Template-Hexapod-AMP-Mimic-Direct-v0" and hasattr(env_cfg, "playback_mode"):
+        env_cfg.playback_mode = True
+
     # configure the ML framework into the global skrl variable
     if args_cli.ml_framework.startswith("jax"):
         skrl.config.jax.backend = "jax" if args_cli.ml_framework == "jax" else "numpy"
