@@ -10,7 +10,7 @@ Python module serving as a project/extension template.
 # Register Gym environments.
 from .tasks import *
 
-# Mimic / AMP envs (Gym registration in hexapod.mimic.hexapod_mimic)
+# Mimic imitation env (Gym registration in hexapod.mimic.hexapod_imitate)
 from . import mimic  # noqa: F401
 
 # Register UI extensions.

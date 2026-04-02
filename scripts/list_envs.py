@@ -36,6 +36,7 @@ import gymnasium as gym
 from prettytable import PrettyTable
 
 import hexapod.tasks  # noqa: F401
+import hexapod.mimic  # noqa: F401
 
 
 def main():

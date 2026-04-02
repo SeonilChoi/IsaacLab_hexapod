@@ -104,6 +104,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 logger = logging.getLogger(__name__)
 
 import hexapod.tasks  # noqa: F401
+import hexapod.mimic  # noqa: F401  # AMP / imitation Gym registrations
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True

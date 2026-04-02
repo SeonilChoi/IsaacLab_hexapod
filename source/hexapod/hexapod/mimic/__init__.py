@@ -1,3 +1,3 @@
-"""Mimic: datasets under ``mimic/dataset/`` and AMP env under ``mimic/hexapod_mimic/``."""
+"""Mimic: datasets under ``mimic/dataset/`` and imitation env under ``mimic/hexapod_imitate/``."""
 
-from . import hexapod_mimic  # noqa: F401
+from . import hexapod_imitate  # noqa: F401

@@ -13,6 +13,7 @@ from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
@@ -20,7 +21,9 @@ from isaaclab.utils import configclass
 from hexapod.assets.robots.hexapod import HEXAPOD_CFG
 
 # Stiff enough for ``set_joint_position_target`` to hold a pose under gravity during inspection.
+# Contact reporting on links requires ``activate_contact_sensors`` for :class:`ContactSensor`.
 HEXAPOD_JOINT_INSPECT_CFG = HEXAPOD_CFG.replace(
+    spawn=HEXAPOD_CFG.spawn.replace(activate_contact_sensors=True),
     actuators={
         "body": ImplicitActuatorCfg(
             joint_names_expr=[".*"],
@@ -68,6 +71,16 @@ class HexapodJointInspectEnvCfg(DirectRLEnvCfg):
 
     robot: ArticulationCfg = HEXAPOD_JOINT_INSPECT_CFG.replace(prim_path="/World/envs/env_.*/Robot")
 
+    contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        # One ``/.*`` per path segment. ``Robot/.*`` only hits the USD root Xform under ``Robot`` (no RigidBodyAPI);
+        # bodies are one level deeper (same idea as ANYmal using ``Robot/.*`` when links are direct children of ``Robot``).
+        prim_path="/World/envs/env_.*/Robot/.*/.*",
+        history_length=3,
+        update_period=0.0,
+        track_air_time=False,
+    )
+    """Net contact forces on rigid links; needs ``activate_contact_sensors`` on spawn."""
+
     inspect_joint_pos: tuple[float, ...] = tuple([0.0] * 18)
     """Absolute joint targets (rad), same order as ``Articulation.data.joint_names``."""
 
@@ -100,6 +113,8 @@ class HexapodJointInspectEnv(DirectRLEnv):
         if self.device == "cpu":
             self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
         self.scene.articulations["robot"] = self.robot
+        self._contact_sensor = ContactSensor(self.cfg.contact_sensor)
+        self.scene.sensors["contact_sensor"] = self._contact_sensor
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
